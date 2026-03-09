@@ -64,6 +64,11 @@ def main():
         metavar="ITEM",
         help="Append merge item(s) to merge_order. ITEM can be a PR number (e.g. 18853) or branch name.",
     )
+    parser.add_argument(
+        "--keep-pr-refs",
+        action="store_true",
+        help="Keep fetched PRs as local/origin upstream-pr/* branches (default: merge directly from fetched commits).",
+    )
     args = parser.parse_args()
 
     UPSTREAM_REMOTE = args.upstream
@@ -104,6 +109,7 @@ def main():
 
     # 3. Prepare branches by fetching upstream PRs 
     # (We no longer rebase them individually here to preserve any stacked dependencies)
+    # Each entry is (merge_ref, strategy, display_name).
     branches_to_combine = []
     for item in active_merge_order:
         strategy = None
@@ -113,19 +119,25 @@ def main():
         if isinstance(item, int) or (isinstance(item, str) and item.isdigit()):
             pr_number = item
             print(f"\n--- Fetching upstream PR {pr_number} ---")
-            local_pr_branch = f"upstream-pr/{pr_number}"
-            # Fetch the PR from upstream into a local branch (use + to force overwrite if local branch diverges)
-            run_command(["git", "fetch", UPSTREAM_REMOTE, f"+pull/{pr_number}/head:{local_pr_branch}"])
-            # Push it to origin so we have a synced backup of this PR in our fork
-            run_command(["git", "push", ORIGIN_REMOTE, f"{local_pr_branch}:{local_pr_branch}", "--force"])
-            branches_to_combine.append((local_pr_branch, strategy))
+            if args.keep_pr_refs:
+                local_pr_branch = f"upstream-pr/{pr_number}"
+                # Fetch the PR from upstream into a local branch (use + to force overwrite if local branch diverges)
+                run_command(["git", "fetch", UPSTREAM_REMOTE, f"+pull/{pr_number}/head:{local_pr_branch}"])
+                # Push it to origin so we have a synced backup of this PR in our fork
+                run_command(["git", "push", ORIGIN_REMOTE, f"{local_pr_branch}:{local_pr_branch}", "--force"])
+                branches_to_combine.append((local_pr_branch, strategy, local_pr_branch))
+            else:
+                # Fetch PR head to FETCH_HEAD and merge by commit SHA to avoid creating extra branches.
+                run_command(["git", "fetch", UPSTREAM_REMOTE, f"pull/{pr_number}/head"])
+                pr_commit = run_command(["git", "rev-parse", "FETCH_HEAD"])
+                branches_to_combine.append((pr_commit, strategy, f"PR #{pr_number}"))
         else:
             branch = item
             if not "update_fork" in branch:
                 print(f"\n--- Including local feature branch for merge: {branch} ---")
                 # We assume your local feature branch is already on your machine, just push it incase
                 run_command(["git", "push", ORIGIN_REMOTE, branch, "--force-with-lease"], check=False)
-            branches_to_combine.append((branch, strategy))
+            branches_to_combine.append((branch, strategy, branch))
 
     # 4. Build the combined development branch (master_jv)
     print(f"\n--- Rebuilding {target_branch} as a combination of all branches ---")
@@ -133,9 +145,9 @@ def main():
     run_command(["git", "checkout", "-B", target_branch, MAIN_BRANCH])
     
     # Merge all PRs and feature branches into this daily integrated branch
-    for branch, strategy in branches_to_combine:
-        print(f"Merging {branch} into {target_branch}...")
-        merge_cmd = ["git", "merge", branch, "-m", f"Merge branch '{branch}' into {target_branch}"]
+    for merge_ref, strategy, display_name in branches_to_combine:
+        print(f"Merging {display_name} into {target_branch}...")
+        merge_cmd = ["git", "merge", merge_ref, "-m", f"Merge {display_name} into {target_branch}"]
         if strategy:
             merge_cmd.append(strategy)
         run_command(merge_cmd)
