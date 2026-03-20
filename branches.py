@@ -53,7 +53,7 @@ integration_branches = {
         "target_branch": "integration/unicode",
         "sources": BASE + [
                 "PR/mpr/unicode",
-                "PR/core/unicode",
+                "core/unicode",
         ]
     }
 }
