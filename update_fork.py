@@ -52,79 +52,25 @@ def resolve_branch_merge_ref(branch, origin_remote):
 
 
 def build_merge_commit_message(display_name, target_branch):
-    """Build a merge commit subject that satisfies verifygitlog formatting rules."""
-    return f"ci: Merge {display_name} into {target_branch}."
+    """Build a merge commit subject that satisfies verifygitlog formatting rules (max 72 chars)."""
+    msg = f"ci: Merge {display_name} into {target_branch}."
+    if len(msg) > 72:
+        # Truncate display_name so the subject fits; keep trailing period.
+        overhead = len("ci: Merge  into .") + len(target_branch)
+        msg = f"ci: Merge {display_name[:72 - overhead]}… into {target_branch}."
+    return msg
 
-def main():
-    """Main function to update the repository."""
-    parser = argparse.ArgumentParser(description="Update fork and local branches.")
-    parser.add_argument("--upstream", default="upstream", help="Upstream remote name")
-    parser.add_argument("--origin", default="origin", help="Origin remote name")
-    parser.add_argument(
-        "--branch",
-        default=DEFAULT_TARGET,
-        help=f"Destination integration branch (default: {DEFAULT_TARGET})",
-    )
-    parser.add_argument(
-        "--insert", "--first",
-        dest="first",
-        action="append",
-        default=[],
-        metavar="ITEM",
-        help="Prepend merge item(s) to merge_order. ITEM can be a PR number (e.g. 18853) or branch name.",
-    )
-    parser.add_argument(
-        "--add", "--last",
-        dest="last",
-        action="append",
-        default=[],
-        metavar="ITEM",
-        help="Append merge item(s) to merge_order. ITEM can be a PR number (e.g. 18853) or branch name.",
-    )
-    parser.add_argument(
-        "--keep-pr-refs",
-        action="store_true",
-        help="Keep fetched PRs as local/origin upstream-pr/* branches (default: merge directly from fetched commits).",
-    )
-    args = parser.parse_args()
+def build_integration_branch(branch_key, args, first_items=None, last_items=None):
+    """Build one integration branch identified by branch_key."""
+    first_items = first_items or []
+    last_items = last_items or []
 
-    # UPSTREAM_REMOTE = args.upstream
-    # ORIGIN_REMOTE = args.origin
-    target_branch = args.branch
+    merge_order = integration_branches[branch_key]["sources"]
+    target_branch = integration_branches[branch_key]["target_branch"]
 
-    cwd = Path.cwd()
-    if not (cwd / ".git").is_dir():
-        print("Error: This script must be run from the root of a git repository.")
-        sys.exit(1)
-    if not (cwd / "mpy-cross").is_dir():
-        print("Error: This script must be run from the root of the micropython repository.")
-        sys.exit(1)
-
-    if target_branch not in integration_branches:
-        print(f"Error: Target branch '{target_branch}' is not defined in branches.py.")
-        print(f"Available branches: {', '.join(integration_branches.keys())}")
-        sys.exit(1)
-
-    merge_order = integration_branches[target_branch]["sources"]
-    target_branch = integration_branches[target_branch]["target_branch"]
-
-    print("Starting process to update fork and custom branches...")
-
-    first_items = [parse_cli_merge_item(item) for item in args.first]
-    last_items = [parse_cli_merge_item(item) for item in args.last]
     active_merge_order = first_items + list(merge_order) + last_items
 
-    # 1. Fetch the latest changes from all remotes.
-    run_command(["git", "fetch", "--all"])
-
-    # 2. Switch to the main branch and update it from upstream.
-    print(f"\n--- Updating {MAIN_BRANCH} from {UPSTREAM_REMOTE} ---")
-    # Reset local main branch directly to upstream's state to prevent ambiguity
-    run_command(["git", "checkout", "-B", MAIN_BRANCH, f"refs/remotes/{UPSTREAM_REMOTE}/{MAIN_BRANCH}"])
-    # Push the updated master branch to your origin (fork)
-    run_command(["git", "push", ORIGIN_REMOTE, MAIN_BRANCH])
-
-    # 3. Prepare branches by fetching upstream PRs 
+    # 3. Prepare branches by fetching upstream PRs
     # (We no longer rebase them individually here to preserve any stacked dependencies)
     # Each entry is (merge_ref, strategy, display_name).
     branches_to_combine = []
@@ -141,7 +87,8 @@ def main():
                 # Fetch the PR from upstream into a local branch (use + to force overwrite if local branch diverges)
                 run_command(["git", "fetch", UPSTREAM_REMOTE, f"+pull/{pr_number}/head:{local_pr_branch}"])
                 # Push it to origin so we have a synced backup of this PR in our fork
-                run_command(["git", "push", ORIGIN_REMOTE, f"{local_pr_branch}:{local_pr_branch}", "--force"])
+                if not args.no_push:
+                    run_command(["git", "push", ORIGIN_REMOTE, f"{local_pr_branch}:{local_pr_branch}", "--force"])
                 branches_to_combine.append((local_pr_branch, strategy, local_pr_branch))
             else:
                 # Fetch PR head to FETCH_HEAD and merge by commit SHA to avoid creating extra branches.
@@ -155,17 +102,18 @@ def main():
             if "update_fork" not in branch:
                 print(f"\n--- Including local feature branch for merge: {branch} ---")
                 if has_local_branch:
-                    # Push the local feature branch before merge to keep origin in sync.
-                    run_command(["git", "push", ORIGIN_REMOTE, branch, "--force-with-lease"])
+                    if not args.no_push:
+                        # Push the local feature branch before merge to keep origin in sync.
+                        run_command(["git", "push", ORIGIN_REMOTE, branch, "--force-with-lease"])
                 else:
                     print(f"Skipping push for '{branch}' because only '{merge_ref}' exists.")
             branches_to_combine.append((merge_ref, strategy, branch))
 
-    # 4. Build the combined development branch (master_jv)
+    # 4. Build the combined development branch
     print(f"\n--- Rebuilding {target_branch} as a combination of all branches ---")
     # Reset destination branch to match MAIN_BRANCH
     run_command(["git", "checkout", "-B", target_branch, MAIN_BRANCH])
-    
+
     # Merge all PRs and feature branches into this daily integrated branch
     for merge_ref, strategy, display_name in branches_to_combine:
         print(f"Merging {display_name} into {target_branch}...")
@@ -176,13 +124,93 @@ def main():
             "-m",
             build_merge_commit_message(display_name, target_branch),
             "--signoff",
+            "--no-verify",  # skip commit hooks (verifygitlog etc.) for automated merges
         ]
         if strategy:
             merge_cmd.append(strategy)
         run_command(merge_cmd)
 
     # Force push the newly combined development branch
-    run_command(["git", "push", ORIGIN_REMOTE, target_branch, "--force"])
+    if not args.no_push:
+        run_command(["git", "push", ORIGIN_REMOTE, target_branch, "--force"])
+
+
+def main():
+    """Main function to update the repository."""
+    branch_choices = list(integration_branches.keys()) + ["all"]
+
+    parser = argparse.ArgumentParser(description="Update fork and local branches.")
+    parser.add_argument(
+        "--no-push",
+        action="store_true",
+        help="Build/merge branches locally but skip all 'git push' steps.",
+    )
+    parser.add_argument(
+        "--branch",
+        default=DEFAULT_TARGET,
+        choices=branch_choices,
+        metavar="BRANCH",
+        help=f"Integration branch to build, or 'all' to build every branch. "
+             f"Choices: {', '.join(branch_choices)}. (default: {DEFAULT_TARGET})",
+    )
+    parser.add_argument(
+        "--insert", "--first",
+        dest="first",
+        action="append",
+        default=[],
+        metavar="ITEM",
+        help="Prepend merge item(s) to merge_order. ITEM can be a PR number (e.g. 18853) or branch name. "
+             "Ignored when --branch all is used.",
+    )
+    parser.add_argument(
+        "--add", "--last",
+        dest="last",
+        action="append",
+        default=[],
+        metavar="ITEM",
+        help="Append merge item(s) to merge_order. ITEM can be a PR number (e.g. 18853) or branch name. "
+             "Ignored when --branch all is used.",
+    )
+    parser.add_argument(
+        "--keep-pr-refs",
+        action="store_true",
+        help="Keep fetched PRs as local/origin upstream-pr/* branches (default: merge directly from fetched commits).",
+    )
+    args = parser.parse_args()
+
+    cwd = Path.cwd()
+    if not (cwd / ".git").is_dir():
+        print("Error: This script must be run from the root of a git repository.")
+        sys.exit(1)
+    if not (cwd / "mpy-cross").is_dir():
+        print("Error: This script must be run from the root of the micropython repository.")
+        sys.exit(1)
+
+    print("Starting process to update fork and custom branches...")
+
+    # 1. Fetch the latest changes from all remotes.
+    run_command(["git", "fetch", "--all"])
+
+    # 2. Switch to the main branch and update it from upstream.
+    print(f"\n--- Updating {MAIN_BRANCH} from {UPSTREAM_REMOTE} ---")
+    # Reset local main branch directly to upstream's state to prevent ambiguity
+    run_command(["git", "checkout", "-B", MAIN_BRANCH, f"refs/remotes/{UPSTREAM_REMOTE}/{MAIN_BRANCH}"])
+    # Push the updated master branch to your origin (fork)
+    if not args.no_push:
+        run_command(["git", "push", ORIGIN_REMOTE, MAIN_BRANCH])
+
+    if args.branch == "all":
+        if args.first or args.last:
+            print("Warning: --insert/--add are ignored when --branch all is used.")
+        for branch_key in integration_branches:
+            print(f"\n{'='*60}")
+            print(f"Processing integration branch: {branch_key}")
+            print(f"{'='*60}")
+            build_integration_branch(branch_key, args)
+    else:
+        first_items = [parse_cli_merge_item(item) for item in args.first]
+        last_items = [parse_cli_merge_item(item) for item in args.last]
+        build_integration_branch(args.branch, args, first_items, last_items)
 
     print("\n--- Repository update complete! ---")
 
