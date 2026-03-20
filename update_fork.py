@@ -1,23 +1,11 @@
+import argparse
 import subprocess
 import sys
-import argparse
 from pathlib import Path
-from branches import integration_branches
 
-# --- Configuration ---
-# The name of your remote for the upstream repository.
-# Note: If running this in GitHub Actions, you must manually add the upstream remote first, e.g.:
-#       git remote add upstream https://github.com/micropython/micropython.git
-#
-UPSTREAM_REMOTE = "upstream"
+from branches import (DEFAULT_TARGET, MAIN_BRANCH, ORIGIN_REMOTE,
+                      UPSTREAM_REMOTE, integration_branches)
 
-# The name of your remote for your fork (usually 'origin' in both local and GitHub Actions).
-ORIGIN_REMOTE = "origin"
-
-# The primary branch on your fork that tracks the upstream repository.
-MAIN_BRANCH = "master"
-
-DEFAULT_TARGET = "master_jv"
 
 def run_command(command, check=True):
     """Runs a command and returns its output."""
@@ -37,6 +25,33 @@ def parse_cli_merge_item(value):
     if value.isdigit():
         return int(value)
     return value
+
+
+def git_ref_exists(ref):
+    """Return True if a git ref exists locally."""
+    result = subprocess.run(["git", "show-ref", "--verify", "--quiet", ref], capture_output=True, text=True)
+    return result.returncode == 0
+
+
+def resolve_branch_merge_ref(branch, origin_remote):
+    """Resolve a merge ref for branch, preferring local then origin/<branch>."""
+    local_ref = f"refs/heads/{branch}"
+    if git_ref_exists(local_ref):
+        return branch, True
+
+    remote_ref = f"refs/remotes/{origin_remote}/{branch}"
+    if git_ref_exists(remote_ref):
+        fallback = f"{origin_remote}/{branch}"
+        print(f"Local branch '{branch}' not found; falling back to '{fallback}' for merge.")
+        return fallback, False
+
+    print(f"Error: Neither local branch '{branch}' nor '{origin_remote}/{branch}' exists.")
+    sys.exit(1)
+
+
+def build_merge_commit_message(display_name, target_branch):
+    """Build a merge commit subject that satisfies verifygitlog formatting rules."""
+    return f"ci: Merge {display_name} into {target_branch}."
 
 def main():
     """Main function to update the repository."""
@@ -71,8 +86,8 @@ def main():
     )
     args = parser.parse_args()
 
-    UPSTREAM_REMOTE = args.upstream
-    ORIGIN_REMOTE = args.origin
+    # UPSTREAM_REMOTE = args.upstream
+    # ORIGIN_REMOTE = args.origin
     target_branch = args.branch
 
     cwd = Path.cwd()
@@ -83,7 +98,7 @@ def main():
         print("Error: This script must be run from the root of the micropython repository.")
         sys.exit(1)
 
-    if not target_branch in integration_branches:
+    if target_branch not in integration_branches:
         print(f"Error: Target branch '{target_branch}' is not defined in branches.py.")
         print(f"Available branches: {', '.join(integration_branches.keys())}")
         sys.exit(1)
@@ -133,11 +148,16 @@ def main():
                 branches_to_combine.append((pr_commit, strategy, f"PR #{pr_number}"))
         else:
             branch = item
-            if not "update_fork" in branch:
+            merge_ref, has_local_branch = resolve_branch_merge_ref(branch, ORIGIN_REMOTE)
+
+            if "update_fork" not in branch:
                 print(f"\n--- Including local feature branch for merge: {branch} ---")
-                # We assume your local feature branch is already on your machine, just push it incase
-                run_command(["git", "push", ORIGIN_REMOTE, branch, "--force-with-lease"], check=False)
-            branches_to_combine.append((branch, strategy, branch))
+                if has_local_branch:
+                    # Push the local feature branch before merge to keep origin in sync.
+                    run_command(["git", "push", ORIGIN_REMOTE, branch, "--force-with-lease"])
+                else:
+                    print(f"Skipping push for '{branch}' because only '{merge_ref}' exists.")
+            branches_to_combine.append((merge_ref, strategy, branch))
 
     # 4. Build the combined development branch (master_jv)
     print(f"\n--- Rebuilding {target_branch} as a combination of all branches ---")
@@ -147,7 +167,14 @@ def main():
     # Merge all PRs and feature branches into this daily integrated branch
     for merge_ref, strategy, display_name in branches_to_combine:
         print(f"Merging {display_name} into {target_branch}...")
-        merge_cmd = ["git", "merge", merge_ref, "-m", f"Merge {display_name} into {target_branch}"]
+        merge_cmd = [
+            "git",
+            "merge",
+            merge_ref,
+            "-m",
+            build_merge_commit_message(display_name, target_branch),
+            "--signoff",
+        ]
         if strategy:
             merge_cmd.append(strategy)
         run_command(merge_cmd)

@@ -1,8 +1,22 @@
+# --- Configuration ---
+# The name of your remote for the upstream repository.
+# Note: If running this in GitHub Actions, you must manually add the upstream remote first, e.g.:
+#       git remote add upstream https://github.com/micropython/micropython.git
+#
+# micropython/micropython repository integration branches configuration.
+UPSTREAM_REMOTE = "upstream"
+MAIN_BRANCH = "master"
+
+# foo/micropython
+ORIGIN_REMOTE = "origin"
+# The primary branch on your fork that tracks the upstream repository.
+DEFAULT_TARGET = "master_jv"
 
 
 BASE = [
         "jv/devcontainer",
         "jv/my_membrowse",
+        "jv/mpremote_publish",
         ]
 
 integration_branches = {
