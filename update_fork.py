@@ -58,7 +58,7 @@ def build_merge_commit_message(display_name, target_branch):
         # Truncate display_name so the subject fits; keep trailing period.
         overhead = len("ci: Merge  into .") + len(target_branch)
         msg = f"ci: Merge {display_name[:72 - overhead]}… into {target_branch}."
-    return msg
+    return msg.replace("#", " ").strip() # try to avoid creating noise in PR conversations.
 
 def build_integration_branch(branch_key, args, first_items=None, last_items=None):
     """Build one integration branch identified by branch_key."""
@@ -94,7 +94,7 @@ def build_integration_branch(branch_key, args, first_items=None, last_items=None
                 # Fetch PR head to FETCH_HEAD and merge by commit SHA to avoid creating extra branches.
                 run_command(["git", "fetch", UPSTREAM_REMOTE, f"pull/{pr_number}/head"])
                 pr_commit = run_command(["git", "rev-parse", "FETCH_HEAD"])
-                branches_to_combine.append((pr_commit, strategy, f"PR #{pr_number}"))
+                branches_to_combine.append((pr_commit, strategy, f"PR {pr_number}"))
         else:
             branch = item
             merge_ref, has_local_branch = resolve_branch_merge_ref(branch, ORIGIN_REMOTE)
