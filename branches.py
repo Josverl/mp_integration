@@ -49,6 +49,32 @@ integration_branches = {
                 "PR/pr_status_action",
         ]
     },
+    "docs": {
+        "target_branch": "integration/docs",
+        "sources": BASE + [
+
+                # 8072, #docs\machine: Add Counter and Encoder classes.
+                14163, # docs/library: Add docs for ntptime.py module.
+
+                15320, # Update os.rst - addendum to sync
+                15587, # docs/framebuf: Add minimal buffer size requirements.
+
+                16842, # docs/library/enum.rst: Add Enum class. 
+                17038, #Document that a Pin can be passed to UART constructor on the ESP32 ports. 
+                17263, # docs: Add documentation for the io.IOBase class. 
+                17301, #  Improve documentation for writing and running tests 
+                17456, # unix: Extend README with fully static builds section.
+                17788, # Docs: Add build requirements for macOS M-Series Macs. 
+                17806, # docs/porting: Update session log. 
+                17826, # docs/esp32: Use new esptool syntax. 
+                18133, # rp2: Add execctrl option for the PIO decorator. 
+                18606, # fix machine.Encoder example (use Encoder instead of Counter) 
+                18697, # Update general and PIO docs for RP2350 support. 
+                18714, # Improve micropython.const() documentation and consistency 
+                18744,
+                18978, #  Document Pin.board and Pin.cpu attributes.
+        ]
+    },
     "unicode": {
         "target_branch": "integration/unicode",
         "sources": BASE + [
