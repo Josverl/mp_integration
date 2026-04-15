@@ -46,7 +46,10 @@ def detect_current_repo(available_repos):
     # Try to get remote URLs (both upstream and origin)
     for remote in ["upstream", "origin"]:
         result = subprocess.run(
-            ["git", "remote", "get-url", remote], capture_output=True, text=True, check=False
+            ["git", "remote", "get-url", remote],
+            capture_output=True,
+            text=True,
+            check=False,
         )
         if result.returncode == 0:
             url = result.stdout.strip()
@@ -74,7 +77,7 @@ def resolve_branch_merge_ref(branch, origin_remote):
             return branch, False
         print(f"Error: Remote branch '{branch}' does not exist.")
         sys.exit(1)
-    
+
     # Check for local branch
     local_ref = f"refs/heads/{branch}"
     if git_ref_exists(local_ref):
@@ -98,7 +101,65 @@ def build_merge_commit_message(display_name, target_branch):
         # Truncate display_name so the subject fits; keep trailing period.
         overhead = len("ci: Merge  into .") + len(target_branch)
         msg = f"ci: Merge {display_name[: 72 - overhead]}… into {target_branch}."
-    return msg.replace("#", " ").strip()  # try to avoid creating noise in PR conversations.
+    # try to avoid creating noise in PR conversations.
+    return msg.replace("#", " ").strip()
+
+
+def bump_version():
+    """Bump version using uv and commit the changes."""
+    print("\n--- Bumping version ---")
+
+    # Check if uv is available
+    result = subprocess.run(["uv", "--version"], capture_output=True, text=True)
+    if result.returncode != 0:
+        print("Warning: 'uv' command not found. Skipping version bump.")
+        return False
+
+    # Check if pyproject.toml exists (indicates a Python project with uv support)
+    if not Path("pyproject.toml").exists():
+        print("Warning: pyproject.toml not found. Skipping version bump.")
+        return False
+
+    # Run uv version bump
+    print("Executing: uv version --bump dev --bump patch")
+    result = subprocess.run(
+        ["uv", "version", "--bump", "dev", "--bump", "patch"],
+        capture_output=True,
+        text=True,
+    )
+
+    if result.returncode != 0:
+        print(f"Warning: uv version bump failed. Skipping.")
+        print(f"Stderr: {result.stderr}")
+        return False
+
+    print(result.stdout.strip())
+
+    # Check if there are changes to commit
+    result = subprocess.run(["git", "diff", "--quiet", "pyproject.toml"], capture_output=True, text=True)
+
+    if result.returncode == 0:
+        print("No version changes detected.")
+        return False
+
+    # Commit the version bump
+    run_command(["git", "add", "pyproject.toml"])
+    # Get the new version for the commit message
+    result = subprocess.run(["uv", "version"], capture_output=True, text=True)
+    version = result.stdout.strip() if result.returncode == 0 else "unknown"
+
+    run_command(
+        [
+            "git",
+            "commit",
+            "-m",
+            f"build: Bump version to {version}",
+            "--signoff",
+            "--no-verify",
+        ]
+    )
+    print(f"Version bumped to {version} and committed.")
+    return True
 
 
 def build_integration_branch(branch_key, args, config, first_items=None, last_items=None):
@@ -131,7 +192,12 @@ def build_integration_branch(branch_key, args, config, first_items=None, last_it
                 local_pr_branch = f"upstream-pr/{pr_number}"
                 # Fetch the PR from upstream into a local branch (use + to force overwrite if local branch diverges)
                 run_command(
-                    ["git", "fetch", UPSTREAM_REMOTE, f"+pull/{pr_number}/head:{local_pr_branch}"]
+                    [
+                        "git",
+                        "fetch",
+                        UPSTREAM_REMOTE,
+                        f"+pull/{pr_number}/head:{local_pr_branch}",
+                    ]
                 )
                 # Push it to origin so we have a synced backup of this PR in our fork
                 if not args.no_push:
@@ -168,6 +234,10 @@ def build_integration_branch(branch_key, args, config, first_items=None, last_it
     print(f"\n--- Rebuilding {target_branch} as a combination of all branches ---")
     # Reset destination branch to match MAIN_BRANCH
     run_command(["git", "checkout", "-B", target_branch, MAIN_BRANCH])
+
+    # Bump version if requested
+    if args.bump:
+        bump_version()
 
     # Merge all PRs and feature branches into this daily integrated branch
     for merge_ref, strategy, display_name in branches_to_combine:
@@ -252,6 +322,11 @@ def main():
         "--keep-pr-refs",
         action="store_true",
         help="Keep fetched PRs as local/origin upstream-pr/* branches (default: merge directly from fetched commits).",
+    )
+    parser.add_argument(
+        "--bump",
+        action="store_true",
+        help="Bump version using 'uv version --bump dev --bump patch' and commit before merging branches.",
     )
     parser.add_argument(
         "--list-repos",
