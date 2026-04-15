@@ -5,8 +5,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from branches import (DEFAULT_TARGET, MAIN_BRANCH, ORIGIN_REMOTE,
-                      UPSTREAM_REMOTE, integration_branches)
+from repos import load_repo_config, get_available_repos
 
 
 def run_command(command, check=True):
@@ -31,8 +30,37 @@ def parse_cli_merge_item(value):
 
 def git_ref_exists(ref):
     """Return True if a git ref exists locally."""
-    result = subprocess.run(["git", "show-ref", "--verify", "--quiet", ref], capture_output=True, text=True)
+    result = subprocess.run(
+        ["git", "show-ref", "--verify", "--quiet", ref], capture_output=True, text=True
+    )
     return result.returncode == 0
+
+
+def detect_current_repo(available_repos):
+    """
+    Detect the current repository by checking git remote URLs.
+
+    Returns:
+        str: The detected repository name, or None if not detected.
+    """
+    # Try to get remote URLs (both upstream and origin)
+    for remote in ["upstream", "origin"]:
+        result = subprocess.run(
+            ["git", "remote", "get-url", remote], capture_output=True, text=True, check=False
+        )
+        if result.returncode == 0:
+            url = result.stdout.strip()
+            # Extract repo name from URL
+            # Handles both HTTPS and SSH URLs:
+            # - https://github.com/owner/repo.git
+            # - git@github.com:owner/repo.git
+            # - https://github.com/owner/repo
+            for repo_name in available_repos:
+                # Match if URL contains /repo_name.git or /repo_name (end of string)
+                if f"/{repo_name}.git" in url or url.endswith(f"/{repo_name}"):
+                    return repo_name
+
+    return None
 
 
 def resolve_branch_merge_ref(branch, origin_remote):
@@ -57,16 +85,21 @@ def build_merge_commit_message(display_name, target_branch):
     if len(msg) > 72:
         # Truncate display_name so the subject fits; keep trailing period.
         overhead = len("ci: Merge  into .") + len(target_branch)
-        msg = f"ci: Merge {display_name[:72 - overhead]}… into {target_branch}."
-    return msg.replace("#", " ").strip() # try to avoid creating noise in PR conversations.
+        msg = f"ci: Merge {display_name[: 72 - overhead]}… into {target_branch}."
+    return msg.replace("#", " ").strip()  # try to avoid creating noise in PR conversations.
 
-def build_integration_branch(branch_key, args, first_items=None, last_items=None):
+
+def build_integration_branch(branch_key, args, config, first_items=None, last_items=None):
     """Build one integration branch identified by branch_key."""
     first_items = first_items or []
     last_items = last_items or []
 
-    merge_order = integration_branches[branch_key]["sources"]
-    target_branch = integration_branches[branch_key]["target_branch"]
+    merge_order = config.integration_branches[branch_key]["sources"]
+    target_branch = config.integration_branches[branch_key]["target_branch"]
+
+    UPSTREAM_REMOTE = config.UPSTREAM_REMOTE
+    ORIGIN_REMOTE = config.ORIGIN_REMOTE
+    MAIN_BRANCH = config.MAIN_BRANCH
 
     active_merge_order = first_items + list(merge_order) + last_items
 
@@ -85,10 +118,20 @@ def build_integration_branch(branch_key, args, first_items=None, last_items=None
             if args.keep_pr_refs:
                 local_pr_branch = f"upstream-pr/{pr_number}"
                 # Fetch the PR from upstream into a local branch (use + to force overwrite if local branch diverges)
-                run_command(["git", "fetch", UPSTREAM_REMOTE, f"+pull/{pr_number}/head:{local_pr_branch}"])
+                run_command(
+                    ["git", "fetch", UPSTREAM_REMOTE, f"+pull/{pr_number}/head:{local_pr_branch}"]
+                )
                 # Push it to origin so we have a synced backup of this PR in our fork
                 if not args.no_push:
-                    run_command(["git", "push", ORIGIN_REMOTE, f"{local_pr_branch}:{local_pr_branch}", "--force"])
+                    run_command(
+                        [
+                            "git",
+                            "push",
+                            ORIGIN_REMOTE,
+                            f"{local_pr_branch}:{local_pr_branch}",
+                            "--force",
+                        ]
+                    )
                 branches_to_combine.append((local_pr_branch, strategy, local_pr_branch))
             else:
                 # Fetch PR head to FETCH_HEAD and merge by commit SHA to avoid creating extra branches.
@@ -137,9 +180,31 @@ def build_integration_branch(branch_key, args, first_items=None, last_items=None
 
 def main():
     """Main function to update the repository."""
-    branch_choices = list(integration_branches.keys()) + ["all"]
+    available_repos = get_available_repos()
 
-    parser = argparse.ArgumentParser(description="Update fork and local branches.")
+    # Detect the current repository from git remotes
+    detected_repo = detect_current_repo(available_repos)
+    default_repo = detected_repo if detected_repo else "micropython"
+
+    parser = argparse.ArgumentParser(
+        description="Update fork and local branches for multiple repositories.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=f"Available repositories: {', '.join(available_repos)}",
+    )
+
+    repo_help = f"Repository to work with. Choices: {', '.join(available_repos)}."
+    if detected_repo:
+        repo_help += f" (default: {default_repo}, auto-detected from git remotes)"
+    else:
+        repo_help += f" (default: {default_repo})"
+
+    parser.add_argument(
+        "--repo",
+        default=default_repo,
+        choices=available_repos,
+        metavar="REPO",
+        help=repo_help,
+    )
     parser.add_argument(
         "--no-push",
         action="store_true",
@@ -147,72 +212,116 @@ def main():
     )
     parser.add_argument(
         "--branch",
-        default=DEFAULT_TARGET,
-        choices=branch_choices,
         metavar="BRANCH",
-        help=f"Integration branch to build, or 'all' to build every branch. "
-             f"Choices: {', '.join(branch_choices)}. (default: {DEFAULT_TARGET})",
+        help="Integration branch to build, or 'all' to build every branch. "
+        "If not specified, uses the repository's default target.",
     )
     parser.add_argument(
-        "--insert", "--first",
+        "--insert",
+        "--first",
         dest="first",
         action="append",
         default=[],
         metavar="ITEM",
         help="Prepend merge item(s) to merge_order. ITEM can be a PR number (e.g. 18853) or branch name. "
-             "Ignored when --branch all is used.",
+        "Ignored when --branch all is used.",
     )
     parser.add_argument(
-        "--add", "--last",
+        "--add",
+        "--last",
         dest="last",
         action="append",
         default=[],
         metavar="ITEM",
         help="Append merge item(s) to merge_order. ITEM can be a PR number (e.g. 18853) or branch name. "
-             "Ignored when --branch all is used.",
+        "Ignored when --branch all is used.",
     )
     parser.add_argument(
         "--keep-pr-refs",
         action="store_true",
         help="Keep fetched PRs as local/origin upstream-pr/* branches (default: merge directly from fetched commits).",
     )
+    parser.add_argument(
+        "--list-repos",
+        action="store_true",
+        help="List all available repository configurations and exit.",
+    )
     args = parser.parse_args()
+
+    # Handle --list-repos
+    if args.list_repos:
+        print("Available repository configurations:")
+        for repo in available_repos:
+            from repos import get_repo_info
+
+            info = get_repo_info(repo)
+            print(f"\n  {repo}:")
+            print(f"    Description: {info['description'].strip()}")
+            print(f"    Upstream: {info['upstream_remote']}")
+            print(f"    Main branch: {info['main_branch']}")
+            print(f"    Default target: {info['default_target']}")
+            print(f"    Integration branches: {', '.join(info['integration_branches'])}")
+        sys.exit(0)
+
+    # Load repository configuration
+    try:
+        config = load_repo_config(args.repo)
+    except ValueError as e:
+        print(f"Error: {e}")
+        sys.exit(1)
+
+    # Set branch default after loading config
+    if args.branch is None:
+        args.branch = config.DEFAULT_TARGET
+
+    # Validate branch choice
+    branch_choices = list(config.integration_branches.keys()) + ["all"]
+    if args.branch not in branch_choices:
+        print(f"Error: Invalid branch '{args.branch}'.")
+        print(f"Choices: {', '.join(branch_choices)}")
+        sys.exit(1)
 
     cwd = Path.cwd()
     if not (cwd / ".git").is_dir():
         print("Error: This script must be run from the root of a git repository.")
         sys.exit(1)
-    if not (cwd / "mpy-cross").is_dir():
-        print("Error: This script must be run from the root of the micropython repository.")
-        sys.exit(1)
 
-    print("Starting process to update fork and custom branches...")
+    print(f"Starting process to update {args.repo} fork and custom branches...")
 
     # 1. Fetch the latest changes from all remotes.
     run_command(["git", "fetch", "--all"])
 
     # 2. Switch to the main branch and update it from upstream.
-    print(f"\n--- Updating {MAIN_BRANCH} from {UPSTREAM_REMOTE} ---")
+    print(f"\n--- Updating {config.MAIN_BRANCH} from {config.UPSTREAM_REMOTE} ---")
     # Reset local main branch directly to upstream's state to prevent ambiguity
-    run_command(["git", "checkout", "-B", MAIN_BRANCH, f"refs/remotes/{UPSTREAM_REMOTE}/{MAIN_BRANCH}"])
+    run_command(
+        [
+            "git",
+            "checkout",
+            "-B",
+            config.MAIN_BRANCH,
+            f"refs/remotes/{config.UPSTREAM_REMOTE}/{config.MAIN_BRANCH}",
+        ]
+    )
     # Push the updated master branch to your origin (fork)
     if not args.no_push:
-        run_command(["git", "push", ORIGIN_REMOTE, MAIN_BRANCH])
+        run_command(["git", "push", config.ORIGIN_REMOTE, config.MAIN_BRANCH])
 
     if args.branch == "all":
         if args.first or args.last:
             print("Warning: --insert/--add are ignored when --branch all is used.")
-        for branch_key in integration_branches:
-            print(f"\n{'='*60}")
+        for branch_key in config.integration_branches:
+            print(f"\n{'=' * 60}")
             print(f"Processing integration branch: {branch_key}")
-            print(f"{'='*60}")
-            build_integration_branch(branch_key, args)
+            print(f"{'=' * 60}")
+            build_integration_branch(branch_key, args, config)
     else:
         first_items = [parse_cli_merge_item(item) for item in args.first]
         last_items = [parse_cli_merge_item(item) for item in args.last]
-        build_integration_branch(args.branch, args, first_items, last_items)
+        build_integration_branch(args.branch, args, config, first_items, last_items)
 
     print("\n--- Repository update complete! ---")
+
 
 if __name__ == "__main__":
     main()
