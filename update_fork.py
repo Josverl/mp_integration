@@ -65,10 +65,22 @@ def detect_current_repo(available_repos):
 
 def resolve_branch_merge_ref(branch, origin_remote):
     """Resolve a merge ref for branch, preferring local then origin/<branch>."""
+    # Check if branch already specifies a remote (e.g., "upstream/branch_name")
+    if "/" in branch:
+        remote_name, branch_name = branch.split("/", 1)
+        remote_ref = f"refs/remotes/{remote_name}/{branch_name}"
+        if git_ref_exists(remote_ref):
+            print(f"Using remote branch '{branch}' for merge.")
+            return branch, False
+        print(f"Error: Remote branch '{branch}' does not exist.")
+        sys.exit(1)
+    
+    # Check for local branch
     local_ref = f"refs/heads/{branch}"
     if git_ref_exists(local_ref):
         return branch, True
 
+    # Fall back to origin remote
     remote_ref = f"refs/remotes/{origin_remote}/{branch}"
     if git_ref_exists(remote_ref):
         fallback = f"{origin_remote}/{branch}"

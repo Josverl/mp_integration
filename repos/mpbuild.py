@@ -22,18 +22,24 @@ DEFAULT_TARGET = "main_jv"
 
 BASE = [
     # Add your base feature branches here
+    "fix_userdir", # Handle '~' in find_mpy_root function
+    "build_sa_ports",  # Build webassembly and windows ports
+    "fix_deploy_filename", # fix: deploy_filename errors
+    83, # Fix Docker builds for git worktrees
+
+    # (73,"-Xtheirs"), # Continue build if make submodules fails.
+    74, # Change build/clean commands to use BOARD<-VARIANT> format.
 ]
+
 
 integration_branches = {
     "main_jv": {"target_branch": "main_jv", "sources": BASE},
     # Add more integration branches as needed
-    # Example:
-    # "feature_integration": {
-    #     "target_branch": "integration/feature",
+    "feature_integration": {
+    #     "target_branch": "integration",
     #     "sources": BASE + [
-    #             123,  # PR number
     #             "jv/my_feature",  # Branch name
     #             (456, "-Xtheirs"),  # PR with merge strategy
     #     ]
-    # },
+    },
 }
