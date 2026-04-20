@@ -253,7 +253,34 @@ def build_integration_branch(branch_key, args, config, first_items=None, last_it
         ]
         if strategy:
             merge_cmd.append(strategy)
-        run_command(merge_cmd)
+        result = subprocess.run(merge_cmd, capture_output=True, text=True)
+        if result.returncode != 0:
+            # rerere may have resolved conflicts in the working tree but not staged them.
+            # Use 'git rerere remaining' to check for truly unresolved files.
+            remaining = subprocess.run(
+                ["git", "rerere", "remaining"],
+                capture_output=True, text=True,
+            )
+            unresolved = remaining.stdout.strip()
+            if not unresolved:
+                # rerere resolved everything — stage and commit
+                print(f"  rerere resolved conflicts for {display_name}, committing...")
+                run_command(["git", "add", "--update"])
+                run_command([
+                    "git", "commit",
+                    "-m", build_merge_commit_message(display_name, target_branch),
+                    "--signoff", "--no-verify", "--no-edit",
+                ])
+            else:
+                print(f"Error running command: {' '.join(merge_cmd)}")
+                print(f"Stdout:\n{result.stdout}")
+                print(f"Stderr:\n{result.stderr}")
+                print(f"Unresolved files:\n{unresolved}")
+                print(
+                    "\nTip: Resolve manually, commit, and rerere will remember "
+                    "the resolution for next time."
+                )
+                sys.exit(1)
 
     # Force push the newly combined development branch
     if not args.no_push:
@@ -374,6 +401,15 @@ def main():
         sys.exit(1)
 
     print(f"Starting process to update {args.repo} fork and custom branches...")
+
+    # Ensure rerere is enabled so conflict resolutions are remembered across rebuilds.
+    result = subprocess.run(
+        ["git", "config", "--local", "rerere.enabled"],
+        capture_output=True, text=True,
+    )
+    if result.stdout.strip() != "true":
+        print("Enabling git rerere for this repository...")
+        run_command(["git", "config", "--local", "rerere.enabled", "true"])
 
     # 1. Fetch the latest changes from all remotes.
     run_command(["git", "fetch", "--all"])

@@ -29,6 +29,8 @@ BASE = [
 
     # (73,"-Xtheirs"), # Continue build if make submodules fails.
     74, # Change build/clean commands to use BOARD<-VARIANT> format.
+    # "copilot/detect-esp-idf-version",
+    (95, "-Xpatience"),
 ]
 
 

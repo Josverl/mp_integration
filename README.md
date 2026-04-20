@@ -145,6 +145,71 @@ integration_branches = {
    - Merges local feature branches
    - Pushes the combined branch to origin
 
+## Handling Merge Conflicts with rerere
+
+Because the integration branch is rebuilt from scratch on every run, the same merge conflicts can recur each time. The script uses Git's **rerere** ("reuse recorded resolution") to handle this automatically.
+
+### How it works
+
+1. **First time a conflict occurs**, the merge fails and the script stops. Git records a "preimage" of the conflict.
+2. **You resolve the conflict** manually (e.g., in VS Code using the merge editor) and commit.
+3. Git records your resolution as a "postimage" — this is the rerere cache.
+4. **On the next run**, Git detects the same conflict, applies your recorded resolution automatically, and the script stages and commits it without stopping.
+
+### Resolving a conflict (first time)
+
+When the script stops with a conflict:
+
+1. Open the conflicted file in VS Code — it will show the merge conflict markers and offer **Accept Current**, **Accept Incoming**, **Accept Both** options inline.
+2. Resolve the conflict (e.g., click **Accept Both Changes** to keep both sides).
+3. Save the file.
+4. Stage and commit from the terminal:
+   ```bash
+   git add -u
+   git commit --signoff --no-verify --no-edit
+   ```
+   This records the resolution in the rerere cache.
+5. Re-run the script:
+   ```bash
+   ../mp_integration/update_fork.py
+   ```
+   The same conflict will now be resolved automatically:
+   ```
+   Merging PR 95 into main_jv...
+     rerere resolved conflicts for PR 95, committing...
+   ```
+
+### Merge strategies
+
+For sources that consistently conflict, you can specify a merge strategy in the configuration:
+
+```python
+BASE = [
+    "my-feature",              # Normal merge
+    (95, "-Xtheirs"),          # On conflict, take the PR's version
+    (74, "-Xpatience"),        # Use patience diff for cleaner conflict detection
+]
+```
+
+| Strategy | Effect |
+|----------|--------|
+| `-Xtheirs` | On conflict, accept the incoming (PR/branch) side |
+| `-Xours` | On conflict, accept the current (integration branch) side |
+| `-Xpatience` | Use patience diff algorithm for better conflict alignment |
+
+### Checking rerere status
+
+```bash
+# List recorded resolutions
+git rerere status
+
+# See the diff of what rerere resolved
+git rerere diff
+
+# Clear all cached resolutions (if needed)
+git rerere gc
+```
+
 ## Requirements
 
 - Git repository with upstream and origin remotes configured
