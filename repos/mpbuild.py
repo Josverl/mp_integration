@@ -26,11 +26,8 @@ BASE = [
     "build_sa_ports",  # Build webassembly and windows ports
     "fix_deploy_filename", # fix: deploy_filename errors
     83, # Fix Docker builds for git worktrees
-
-    # (73,"-Xtheirs"), # Continue build if make submodules fails.
     74, # Change build/clean commands to use BOARD<-VARIANT> format.
-    # "copilot/detect-esp-idf-version",
-    (95, "-Xpatience"),
+    "copilot/detect-esp-idf-version",
 ]
 
 
